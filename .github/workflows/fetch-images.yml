@@ -1,0 +1,61 @@
+name: Fetch images
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download images and rewrite links
+        run: |
+          python3 - << 'PY'
+          import re, glob, hashlib, os, urllib.request
+
+          os.makedirs('images', exist_ok=True)
+          pattern = re.compile(r'(?:src|href)="(https://(?:sites\.google\.com/sitesv-images-rt|www\.gstatic\.com/images)/[^"]+)"')
+          ext_map = {'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif', 'image/svg+xml': '.svg'}
+
+          files = sorted(glob.glob('*.html'))
+          urls = []
+          for f in files:
+              for u in pattern.findall(open(f, encoding='utf-8').read()):
+                  if u not in urls:
+                      urls.append(u)
+          print(f'Found {len(urls)} images in {len(files)} pages')
+
+          local = {}
+          for i, u in enumerate(urls, 1):
+              name = hashlib.md5(u.encode()).hexdigest()[:12]
+              try:
+                  req = urllib.request.Request(u.replace('&amp;', '&'), headers={'User-Agent': 'Mozilla/5.0'})
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      data = r.read()
+                      ext = ext_map.get(r.headers.get_content_type(), '.jpg')
+                  path = f'images/{name}{ext}'
+                  open(path, 'wb').write(data)
+                  local[u] = path
+                  print(f'[{i}/{len(urls)}] OK   {path} ({len(data)//1024} KB)')
+              except Exception as e:
+                  print(f'[{i}/{len(urls)}] FAIL {u[:80]}... {e}')
+
+          for f in files:
+              s = open(f, encoding='utf-8').read()
+              for u, p in local.items():
+                  s = s.replace(u, p)
+              open(f, 'w', encoding='utf-8').write(s)
+          print(f'Done: {len(local)}/{len(urls)} images saved to images/')
+          PY
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && echo "Nothing to commit" || git commit -m "Store images locally in images/"
+          git push
